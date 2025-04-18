@@ -1,0 +1,89 @@
+---
+title: "CMA 1"
+output: html_document
+date: "2025-04-16"
+---
+
+```{r setup, include=FALSE}
+library(haven)
+
+file_path <- path.expand("~/Downloads/nsw.dta")
+
+nsw <- read_dta(file_path)
+```
+
+
+```{r}
+head(nsw)
+```
+
+```{r}
+library(dplyr)
+
+file_path <- path.expand("~/Downloads/nsw.dta")
+nsw <- read_dta(file_path)
+
+# Compare means by treatment status
+covariates <- c("age", "educ", "black", "hisp", "married", "re74", "re75")
+
+balance_check <- nsw %>%
+  group_by(treated) %>%
+  summarise(across(all_of(covariates), list(mean = mean, sd = sd), .names = "{.col}_{.fn}"))
+
+print(balance_check)
+
+# t-tests for a more rigorous check:
+balance_tests <- lapply(covariates, function(var) {
+  t.test(nsw[[var]] ~ nsw$treated)
+})
+names(balance_tests) <- covariates
+balance_tests
+
+```
+```{r}
+# Regression to estimate ATT
+att_model <- lm(re78 ~ treated, data = nsw)
+summary(att_model)
+
+```
+```{r}
+# Create the ntreated variable
+nsw <- nsw %>%
+  mutate(
+    ntreated = case_when(
+      treated == 1 & sample == 1 ~ 1,       # NSW treated group
+      sample != 1 ~ 0,                      # CPS or PSID
+      treated == 0 & sample == 1 ~ NA_real_ # NSW control group
+    )
+  )
+# Run regression for non-experimental ATT
+nonexp_model <- lm(re78 ~ ntreated, data = nsw)
+summary(nonexp_model)
+
+```
+```{r}
+# Regression model: re78 on ntreated + covariates
+adjusted_model <- lm(re78 ~ ntreated + age + educ + black + hisp + married + re74 + re75, data = nsw)
+summary(adjusted_model)
+
+```
+```{r}
+# Filter for relevant data (ntreated is not NA)
+nsw_weighted <- nsw %>% filter(!is.na(ntreated))
+
+# Propensity score model
+ps_model <- glm(ntreated ~ age + educ + black + hisp + married + re74 + re75, 
+                family = binomial(), data = nsw_weighted)
+
+# Predicted probabilities
+nsw_weighted$pscore <- predict(ps_model, type = "response")
+
+# Calculate IPT weights
+nsw_weighted$iptw <- with(nsw_weighted, 
+                          (pscore / (1 - pscore)) * (1 - ntreated) + ntreated)
+
+# Weighted regression to estimate ATT
+iptw_model <- lm(re78 ~ ntreated, data = nsw_weighted, weights = iptw)
+summary(iptw_model)
+```
+
