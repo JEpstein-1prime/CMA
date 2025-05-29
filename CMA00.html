@@ -1148,7 +1148,6 @@ Change &gt; (iqr_upper + 1.5 * (iqr_upper - iqr_lower))) )</p>
 <p>print(summary_stats)</p>
 </div>
 <div id="you-can-add-a-line-in-the-plot-to-show-the-median-if-desired" class="section level1">
-<h1>You can add a line in the plot to show the median if desired:</h1>
 <p>ggplot(data_clean, aes(x = PRE_bin, y = Change)) + geom_boxplot(fill
 = “lightgray”, alpha = 0.5, outlier.color = “red”) + geom_point(data =
 summary_stats, aes(x = PRE_bin, y = median_change), color = “blue”, size
