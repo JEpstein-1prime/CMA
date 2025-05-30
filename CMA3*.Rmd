@@ -166,75 +166,78 @@ print(summary(direct_model))
 ```
 
 ```{r}
-library(haven)
-library(dplyr)
-library(purrr)
-library(tidyr)
+#Q8
 
 setwd("/Users/josephepstein/Downloads")
 plowData <- read_dta("plowUse (1).dta")
 
-# Define variable groups
+
 C <- c("agricultural_suitability", "tropical_climate", "large_animals", "rugged")
 D <- "plow"
 L <- "polity2_2000"
 M <- "ln_income"
 Y <- "women_politics"
 
-# Subset and clean data
-plowData <- na.omit(plowData[, c('isocode', Y, D, L, M, C)])
 
-# Normalize outcome variable
-plowData$women_politics <- plowData$women_politics / 100
+plowData <- na.omit(plowData[, c("isocode", Y, D, L, M, C)])
+plowData[[Y]] <- plowData[[Y]] / 100  # Convert to [0, 1] scale
 
-# Residualize mediator (ln_income) against D and C
-mediator_model <- lm(ln_income ~ plow + agricultural_suitability + tropical_climate + large_animals + rugged,
-                     data = plowData)
-plowData$resid_mediator <- resid(mediator_model)
 
-# Residualize outcome (women_politics) against D, L, and C
-outcome_model <- lm(women_politics ~ plow + polity2_2000 + agricultural_suitability + 
-                      tropical_climate + large_animals + rugged,
-                    data = plowData)
-plowData$resid_outcome <- resid(outcome_model)
+med_model <- lm(as.formula(paste(M, "~", D, "+", paste(C, collapse = "+"))), data = plowData)
+plowData$resid_mediator <- resid(med_model)
 
-# Indirect effect model
-indirect_model <- lm(resid_outcome ~ resid_mediator + plow + resid_mediator:plow, data = plowData)
 
-# Direct effect model (same model form)
-direct_model <- lm(resid_outcome ~ plow + resid_mediator + resid_mediator:plow, data = plowData)
+out_model <- lm(as.formula(paste(Y, "~", D, "+", L, "+", paste(C, collapse = "+"))), data = plowData)
+plowData$resid_outcome <- resid(out_model)
 
-# Bootstrap estimates
+# Fit RWR model for point estimates
+rwr_model <- lm(resid_outcome ~ plow * resid_mediator, data = plowData)
+IDE_point <- coef(rwr_model)["resid_mediator"]
+CDE_point <- coef(rwr_model)["plow"]
+
+# Bootstrap setup
 set.seed(60637)
 boot_reps <- 2000
-boot_estimates <- replicate(boot_reps, {
-  sample_data <- plowData[sample(nrow(plowData), replace = TRUE), ]
-  med_model <- lm(ln_income ~ plow + agricultural_suitability + tropical_climate + large_animals + rugged,
-                  data = sample_data)
-  sample_data$resid_mediator <- resid(med_model)
-  out_model <- lm(women_politics ~ plow + polity2_2000 + agricultural_suitability + 
-                    tropical_climate + large_animals + rugged,
-                  data = sample_data)
-  sample_data$resid_outcome <- resid(out_model)
-  ind_model <- lm(resid_outcome ~ resid_mediator + plow + resid_mediator:plow, data = sample_data)
-  coef(ind_model)["resid_mediator"]
+n <- nrow(plowData)
+
+boot_results <- replicate(boot_reps, {
+  sample_data <- plowData[sample(n, replace = TRUE), ]
+
+  # Recompute residuals in bootstrap sample
+  med_model_b <- lm(as.formula(paste(M, "~", D, "+", paste(C, collapse = "+"))), data = sample_data)
+  sample_data$resid_mediator <- resid(med_model_b)
+  
+  out_model_b <- lm(as.formula(paste(Y, "~", D, "+", L, "+", paste(C, collapse = "+"))), data = sample_data)
+  sample_data$resid_outcome <- resid(out_model_b)
+
+  # Fit model and extract coefficients
+  rwr_b <- lm(resid_outcome ~ plow * resid_mediator, data = sample_data)
+
+  c(IDE = coef(rwr_b)["resid_mediator"],
+    CDE = coef(rwr_b)["plow"])
 })
 
-# Summarize bootstrap results
-ci <- quantile(boot_estimates, probs = c(0.025, 0.975))
-pval <- mean(abs(boot_estimates) >= abs(coef(indirect_model)["resid_mediator"]))
+# Convert to data frame
+boot_df <- as.data.frame(t(boot_results))
 
-# Report
-rwr.boot.est <- data.frame(
-  param = "IDE(1,0)",
-  est = round(coef(indirect_model)["resid_mediator"], 3),
-  ci_lo = round(ci[1], 3),
-  ci_hi = round(ci[2], 3),
-  pval = round(pval, 3)
+# Compute confidence intervals
+ci_ide <- quantile(boot_df$IDE, probs = c(0.025, 0.975))
+ci_cde <- quantile(boot_df$CDE, probs = c(0.025, 0.975))
+
+# Compute proper 2-sided p-values centered at 0
+pval_ide <- mean(boot_df$IDE <= 0) * 2
+pval_cde <- mean(boot_df$CDE <= 0) * 2
+
+# Final summary output
+final_results <- data.frame(
+  param = c("IDE(1,0)", "CDE(1,0)"),
+  est = round(c(IDE_point, CDE_point), 3),
+  ci_lo = round(c(ci_ide[1], ci_cde[1]), 3),
+  ci_hi = round(c(ci_ide[2], ci_cde[2]), 3),
+  pval = round(c(pval_ide, pval_cde), 3)
 )
 
-print(rwr.boot.est)
-
+print(final_results)
 ```
 
 
