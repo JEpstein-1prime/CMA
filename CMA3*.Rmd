@@ -1,0 +1,241 @@
+---
+title: "CMA3"
+output:
+  html_document: default
+  pdf_document: default
+date: "2025-05-14"
+---
+
+```{r setup, include=FALSE}
+#Q3
+library(haven)
+library(dplyr)
+
+# Define the CDE function
+manual_impcde <- function(data, model_y, D, M, d, dstar, m) {
+  df <- data
+  df[[M]] <- m
+  df_d <- df; df_d[[D]] <- d
+  df_dstar <- df; df_dstar[[D]] <- dstar
+  pred_d <- predict(model_y, newdata = df_d, type = "response")
+  pred_dstar <- predict(model_y, newdata = df_dstar, type = "response")
+  mean(pred_d - pred_dstar, na.rm = TRUE)
+}
+
+# Load and preprocess data
+jobs2 <- read_dta("jobs2.dta")
+factor_vars <- c("treat", "work1", "nonwhite", "educ", "income", "sex", "econ_hard")
+jobs2 <- jobs2 %>% mutate(across(all_of(factor_vars), haven::as_factor))
+
+jobs2 <- jobs2 %>%
+  mutate(
+    treat = recode(treat, "control" = 0L, "exp" = 1L),
+    work1 = recode(work1, "psyump" = 0L, "psyemp" = 1L),
+    nonwhite = recode(nonwhite, "white0" = 0L, "non.white1" = 1L),
+    educ = recode(educ, "lt-hs" = 1L, "highsc" = 2L, "somcol" = 3L, "bach" = 4L, "gradwk" = 5L),
+    income = recode(income, "lt15k" = 1L, "15t24k" = 2L, "25t39k" = 3L, "40t49k" = 4L, "50k+" = 5L)
+  )
+
+mq80 <- quantile(jobs2$job_seek, probs = 0.8, na.rm = TRUE)
+
+lin <- lm(work1 ~ treat * job_seek + econ_hard + sex + age + nonwhite + educ + income, data = jobs2)
+logit <- glm(work1 ~ treat * job_seek + econ_hard + sex + age + nonwhite + educ + income, data = jobs2, family = "binomial")
+
+# Apply manual CDE estimation
+manual_impcde(data = jobs2, model_y = lin, D = "treat", M = "job_seek", d = 1, dstar = 0, m = mq80)
+manual_impcde(data = jobs2, model_y = logit, D = "treat", M = "job_seek", d = 1, dstar = 0, m = mq80)
+```
+
+
+
+
+
+```{r}
+#Q4
+library(haven)
+library(dplyr)
+library(purrr)
+library(tidyr)
+
+# Read data
+jobs2 <- read_dta("jobs2.dta")
+
+# Convert only categorical variables to factor
+factor_vars <- c("treat", "work1", "nonwhite", "educ", "income", "sex", "econ_hard")
+jobs2 <- jobs2 %>%
+  mutate(across(all_of(factor_vars), haven::as_factor))
+
+# Recode variables using labels
+jobs2 <- jobs2 %>%
+  mutate(
+    treat = recode(treat, "control" = 0L, "exp" = 1L),
+    work1 = recode(work1, "psyump" = 0L, "psyemp" = 1L),
+    nonwhite = recode(nonwhite, "white0" = 0L, "non.white1" = 1L),
+    educ = recode(educ, "lt-hs" = 1L, "highsc" = 2L, "somcol" = 3L, "bach" = 4L, "gradwk" = 5L),
+    income = recode(income, "lt15k" = 1L, "15t24k" = 2L, "25t39k" = 3L, "40t49k" = 4L, "50k+" = 5L)
+  )
+
+# Now job_seek remains numeric and can be used in quantile()
+mq80 <- quantile(jobs2$job_seek, probs = 0.8, na.rm = TRUE)
+
+# Fit logistic model
+logit <- glm(work1 ~ treat * job_seek + econ_hard + sex + age + nonwhite + educ + income,
+             data = jobs2, family = "binomial")
+
+# Define manual impcde function
+manual_impcde <- function(data, model_y, D, M, d, dstar, m) {
+  df <- data
+  df[[M]] <- m
+  df_d <- df; df_d[[D]] <- d
+  df_dstar <- df; df_dstar[[D]] <- dstar
+  pred_d <- predict(model_y, newdata = df_d, type = "response")
+  pred_dstar <- predict(model_y, newdata = df_dstar, type = "response")
+  mean(pred_d - pred_dstar, na.rm = TRUE)
+}
+
+# Bootstrap CDE manually
+set.seed(60637)
+boot_reps <- 2000
+boot_samples <- rerun(boot_reps, sample_n(jobs2, size = nrow(jobs2), replace = TRUE))
+
+boot_estimates <- map_dbl(boot_samples, ~{
+  model <- glm(work1 ~ treat * job_seek + econ_hard + sex + age + nonwhite + educ + income,
+               data = ., family = "binomial")
+  manual_impcde(., model, "treat", "job_seek", 1, 0, mq80)
+})
+
+# Compute 90% CI and p-value
+ci_lower <- quantile(boot_estimates, 0.05)
+ci_upper <- quantile(boot_estimates, 0.95)
+pval <- mean(abs(boot_estimates) >= abs(mean(boot_estimates)))
+
+# Print results
+cat("90% CI for CDE:", round(ci_lower, 4), ",", round(ci_upper, 4), "\n")
+cat("P-value:", round(pval, 4), "\n")
+```
+
+
+
+
+```{r}
+#Q7
+library(haven)
+library(dplyr)
+library(purrr)
+library(tidyr)
+
+# Set working directory
+setwd("/Users/josephepstein/Downloads")
+plowData <- read_dta("plowUse (1).dta")
+# Define variable groups
+C <- c("agricultural_suitability", "tropical_climate", "large_animals", "rugged")
+D <- "plow"
+L <- "polity2_2000"
+M <- "ln_income"
+Y <- "women_politics"
+
+# Subset and clean data
+plowData <- na.omit(plowData[, c('isocode', Y, D, L, M, C)])
+
+# Normalize outcome variable
+plowData$women_politics <- plowData$women_politics / 100
+
+# Residualize mediator (ln_income) against D and C
+mediator_model <- lm(ln_income ~ plow + agricultural_suitability + tropical_climate + large_animals + rugged,
+                     data = plowData)
+plowData$resid_mediator <- resid(mediator_model)
+
+# Residualize outcome (women_politics) against D, L, and C
+outcome_model <- lm(women_politics ~ plow + polity2_2000 + agricultural_suitability + 
+                      tropical_climate + large_animals + rugged,
+                    data = plowData)
+plowData$resid_outcome <- resid(outcome_model)
+
+# Indirect effect model
+indirect_model <- lm(resid_outcome ~ resid_mediator + plow + resid_mediator:plow, data = plowData)
+
+# Direct effect model (same model form)
+direct_model <- lm(resid_outcome ~ plow + resid_mediator + resid_mediator:plow, data = plowData)
+
+# Output summaries
+cat("Indirect Effect Model:\n")
+print(summary(indirect_model))
+
+cat("\nDirect Effect Model:\n")
+print(summary(direct_model))
+```
+
+```{r}
+library(haven)
+library(dplyr)
+library(purrr)
+library(tidyr)
+
+setwd("/Users/josephepstein/Downloads")
+plowData <- read_dta("plowUse (1).dta")
+
+# Define variable groups
+C <- c("agricultural_suitability", "tropical_climate", "large_animals", "rugged")
+D <- "plow"
+L <- "polity2_2000"
+M <- "ln_income"
+Y <- "women_politics"
+
+# Subset and clean data
+plowData <- na.omit(plowData[, c('isocode', Y, D, L, M, C)])
+
+# Normalize outcome variable
+plowData$women_politics <- plowData$women_politics / 100
+
+# Residualize mediator (ln_income) against D and C
+mediator_model <- lm(ln_income ~ plow + agricultural_suitability + tropical_climate + large_animals + rugged,
+                     data = plowData)
+plowData$resid_mediator <- resid(mediator_model)
+
+# Residualize outcome (women_politics) against D, L, and C
+outcome_model <- lm(women_politics ~ plow + polity2_2000 + agricultural_suitability + 
+                      tropical_climate + large_animals + rugged,
+                    data = plowData)
+plowData$resid_outcome <- resid(outcome_model)
+
+# Indirect effect model
+indirect_model <- lm(resid_outcome ~ resid_mediator + plow + resid_mediator:plow, data = plowData)
+
+# Direct effect model (same model form)
+direct_model <- lm(resid_outcome ~ plow + resid_mediator + resid_mediator:plow, data = plowData)
+
+# Bootstrap estimates
+set.seed(60637)
+boot_reps <- 2000
+boot_estimates <- replicate(boot_reps, {
+  sample_data <- plowData[sample(nrow(plowData), replace = TRUE), ]
+  med_model <- lm(ln_income ~ plow + agricultural_suitability + tropical_climate + large_animals + rugged,
+                  data = sample_data)
+  sample_data$resid_mediator <- resid(med_model)
+  out_model <- lm(women_politics ~ plow + polity2_2000 + agricultural_suitability + 
+                    tropical_climate + large_animals + rugged,
+                  data = sample_data)
+  sample_data$resid_outcome <- resid(out_model)
+  ind_model <- lm(resid_outcome ~ resid_mediator + plow + resid_mediator:plow, data = sample_data)
+  coef(ind_model)["resid_mediator"]
+})
+
+# Summarize bootstrap results
+ci <- quantile(boot_estimates, probs = c(0.025, 0.975))
+pval <- mean(abs(boot_estimates) >= abs(coef(indirect_model)["resid_mediator"]))
+
+# Report
+rwr.boot.est <- data.frame(
+  param = "IDE(1,0)",
+  est = round(coef(indirect_model)["resid_mediator"], 3),
+  ci_lo = round(ci[1], 3),
+  ci_hi = round(ci[2], 3),
+  pval = round(pval, 3)
+)
+
+print(rwr.boot.est)
+
+```
+
+
+
